@@ -109,8 +109,12 @@ class LLMManager:
                 if name != self.active:
                     self.active = name
                 return result_text
-            except Exception:
+            except Exception as e:
+                import sys
+                print(f"[LLM {name} failed] {type(e).__name__}: {e}", file=sys.stderr)
                 continue
+
+                
 
         return self._fallback_response()
 
