@@ -7,7 +7,8 @@ This backend powers the L6S (Lean Six Sigma) Expert Advisor chatbot. It uses a g
 ```
 backend_for_colleague/
 ├── api/                    # API integration files
-│   ├── l6s_api_optimized.py   # Main API with process-level caching
+│   ├── l6s_api_optimized.py   # Python engine logic and process-level cache
+│   ├── fastapi_server.py      # Long-running FastAPI engine
 │   └── server.js              # Express.js server for React frontend integration
 ├── core/                   # Core brain logic
 │   └── neo.py                 # Main L6SBrain class (replace placeholder)
@@ -29,9 +30,10 @@ The following placeholder files need to be replaced with the actual files from t
 ## How the Backend Works
 
 ### Architecture
-- **React Frontend** → **Express.js Server** → **Python Backend** 
-- The `server.js` file acts as a bridge between the React UI and Python backend
-- `l6s_api_optimized.py` provides process-level caching for better performance
+- **React Frontend** → **Express.js Server** → **FastAPI Python Engine**
+- The `server.js` file starts one Uvicorn/FastAPI process and forwards chat requests to it
+- `l6s_api_optimized.py` caches the `L6SBrain` instance in that long-lived process, so its data and trained models are loaded once and reused across messages
+- Changing model settings replaces the LLM manager without reloading the cached `L6SBrain` data
 - The `L6SBrain` class from `neo.py` handles all the core logic
 
 ### Key Features
@@ -62,11 +64,11 @@ The following placeholder files need to be replaced with the actual files from t
    cd path/to/react/app
    npm install
    ```
-4. **Start the Express server**:
+4. **Start the backend** (Express starts and supervises the Python FastAPI engine):
    ```bash
-   node server.js
+   npm start
    ```
-5. The server will run on `http://localhost:5001`
+5. The server will run on `http://localhost:5001`; FastAPI listens privately on `127.0.0.1:8000`
 
 ## Integration with New Frontend
 

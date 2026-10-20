@@ -13,7 +13,8 @@ const app = express();
 const PORT = process.env.PORT || 5001;
 const BACKEND_DIR = path.join(__dirname, '..');
 const DATA_PATH = path.join(BACKEND_DIR, 'data', 'unified_lss_data_final.json');
-const PYTHON_SCRIPT = path.join(__dirname, 'l6s_api_optimized.py');
+const PYTHON_API_PORT = Number(process.env.PYTHON_API_PORT || 8000);
+const PYTHON_API_URL = process.env.PYTHON_API_URL || `http://127.0.0.1:${PYTHON_API_PORT}`;
 
 // ============================================================
 // AUTH SYSTEM
@@ -89,68 +90,79 @@ const pythonExeCandidates = [
   path.join(__dirname, '..', '..', '.venv', 'bin', 'python')
 ].filter(Boolean);
 const pythonExePath = pythonExeCandidates.find(candidate => fs.existsSync(candidate)) || 'python';
+let pythonProcess;
+let httpServer;
 
-const parseJsonFromStdout = (raw) => {
-  try {
-    return JSON.parse(raw);
-  } catch (error) {
-    const start = raw.lastIndexOf('{');
-    const end = raw.lastIndexOf('}');
-    if (start !== -1 && end !== -1 && end > start) {
-      return JSON.parse(raw.slice(start, end + 1));
+const startPythonApi = async () => {
+  pythonProcess = spawn(
+    pythonExePath,
+    [
+      '-m', 'uvicorn',
+      'api.fastapi_server:app',
+      '--host', '127.0.0.1',
+      '--port', String(PYTHON_API_PORT),
+      '--workers', '1'
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'], cwd: BACKEND_DIR }
+  );
+
+  let startupError;
+  let lastHealthError;
+  pythonProcess.stdout.on('data', data => process.stdout.write(`[Python API] ${data}`));
+  pythonProcess.stderr.on('data', data => process.stderr.write(`[Python API] ${data}`));
+  pythonProcess.on('error', error => { startupError = error; });
+
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    if (startupError) throw new Error(`Could not start Python FastAPI: ${startupError.message}`);
+    if (pythonProcess.exitCode !== null) {
+      throw new Error(`Python FastAPI exited during startup (code ${pythonProcess.exitCode}).`);
     }
-    throw error;
+
+    try {
+      const response = await fetch(`${PYTHON_API_URL}/health`);
+      if (response.ok) {
+        console.log('Python FastAPI engine is ready.');
+        return;
+      }
+      lastHealthError = new Error(`Health check returned HTTP ${response.status}`);
+    } catch (error) {
+      lastHealthError = error;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 500));
   }
+
+  throw new Error(`Python FastAPI did not become ready: ${lastHealthError?.message || 'startup timed out'}`);
 };
 
-const runPython = ({ message, useSidebarValues = false, sidebarScores, conversationHistory, modelConfig, language }) => {
-  return new Promise((resolve, reject) => {
-    const args = [
-      PYTHON_SCRIPT,
-      '--message', message,
-      '--use-sidebar-values', useSidebarValues ? 'true' : 'false'
-    ];
+const stopPythonApi = () => {
+  if (pythonProcess && !pythonProcess.killed) pythonProcess.kill();
+};
 
-    if (modelConfig) {
-      if (modelConfig.local_model) args.push('--local-model', modelConfig.local_model);
-      if (modelConfig.api_model) args.push('--api-model', modelConfig.api_model);
-      if (modelConfig.temperature !== undefined) args.push('--temperature', modelConfig.temperature.toString());
-      if (modelConfig.api_key) args.push('--api-key', modelConfig.api_key);
-      if (modelConfig.use_api !== undefined) args.push('--use-api', modelConfig.use_api ? 'true' : 'false');
-    }
-
-    if (language) args.push('--language', String(language));
-    if (sidebarScores && useSidebarValues) args.push('--sidebar-scores', JSON.stringify(sidebarScores));
-    if (conversationHistory && Array.isArray(conversationHistory)) {
-      args.push('--conversation-history', JSON.stringify(conversationHistory));
-    }
-
-    const pythonProcess = spawn(pythonExePath, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: BACKEND_DIR });
-    let response = '';
-    let stderr = '';
-
-    pythonProcess.stdout.on('data', (data) => { response += data.toString(); });
-    pythonProcess.stderr.on('data', (data) => { stderr += data.toString(); });
-
-    pythonProcess.on('close', (code) => {
-      if (stderr) console.error(`Python error: ${stderr}`);
-      if (code !== 0) {
-        let message = `Python script failed with code: ${code}`;
-        try {
-          const parsed = parseJsonFromStdout(response);
-          if (parsed?.content) message = parsed.content;
-        } catch (error) {}
-        return reject(new Error(message));
-      }
-      try {
-        resolve(parseJsonFromStdout(response));
-      } catch (error) {
-        console.error('Error parsing Python response:', error);
-        console.error('Response was:', response);
-        reject(new Error('Invalid response from Python script'));
-      }
-    });
+const runPython = async ({ message, useSidebarValues = false, sidebarScores, conversationHistory, modelConfig, language }) => {
+  const response = await fetch(`${PYTHON_API_URL}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message,
+      useSidebarValues,
+      sidebarScores,
+      conversationHistory,
+      modelConfig,
+      language
+    })
   });
+
+  let result;
+  try {
+    result = await response.json();
+  } catch (error) {
+    throw new Error(`Invalid response from Python FastAPI (HTTP ${response.status}).`);
+  }
+  if (!response.ok) {
+    throw new Error(result.detail || result.error || `Python FastAPI returned HTTP ${response.status}.`);
+  }
+  return result;
 };
 
 const parseLevelValue = (value) => {
@@ -211,37 +223,125 @@ if (fs.existsSync(distPath)) {
 // AUTH ROUTES
 // ============================================================
 
+const publicUser = ({ password, ...user }) => ({
+  ...user,
+  name: user.name || user.username,
+  email: user.email || ''
+});
+const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value || '');
+// Readable one-time password, e.g. "kT4m-9QxP" (no 0/O/1/l to avoid confusion)
+const makeTempPassword = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  const pick = (n) => Array.from({ length: n }, () => chars[crypto.randomInt(chars.length)]).join('');
+  return `${pick(4)}-${pick(4)}`;
+};
+const normalizeRole = (role) => (role === 'admin' ? 'admin' : 'utilisateur');
+
 app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body;
+  // Accepts a username (old accounts) or an email (new accounts)
+  const login = String(req.body?.username || req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
   const users = loadUsers();
-  const user = users.find(u => u.username === username && u.password === hashPwd(password));
+  const user = users.find(u =>
+    (u.username.toLowerCase() === login || (u.email || '').toLowerCase() === login)
+    && u.password === hashPwd(password));
   if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+  const safe = publicUser(user);
   const token = signToken({ id: user.id, username: user.username, role: user.role });
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
+  res.json({ token, user: { id: safe.id, username: safe.username, name: safe.name, email: safe.email, role: safe.role } });
 });
 
+// Create a user. New form: { name, email, role } -> returns a one-time password.
+// Old form { username, password, role } still works (login.html uses it).
 app.post('/api/auth/register', requireAdmin, (req, res) => {
-  const { username, password, role } = req.body;
-  if (!username || !password) return res.status(400).json({ error: 'Missing fields' });
+  const name = String(req.body?.name || '').trim();
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const username = email || String(req.body?.username || '').trim();
+  if (!username) return res.status(400).json({ error: 'Email is required' });
+  if (email && !isEmail(email)) return res.status(400).json({ error: 'Please enter a valid email' });
+
   const users = loadUsers();
-  if (users.find(u => u.username === username))
-    return res.status(409).json({ error: 'Username already exists' });
-  const newUser = { id: Date.now(), username, password: hashPwd(password), role: role || 'utilisateur' };
+  const taken = users.some(u =>
+    u.username.toLowerCase() === username.toLowerCase()
+    || (email && (u.email || '').toLowerCase() === email));
+  if (taken) return res.status(409).json({ error: 'A user with this email already exists' });
+
+  const tempPassword = req.body?.password ? null : makeTempPassword();
+  const newUser = {
+    id: Date.now(),
+    username,
+    name: name || username,
+    email,
+    role: normalizeRole(req.body?.role),
+    password: hashPwd(req.body?.password || tempPassword),
+    createdAt: new Date().toISOString()
+  };
   users.push(newUser);
   saveUsers(users);
-  res.json({ message: 'User created', user: { id: newUser.id, username, role: newUser.role } });
+  res.json({ message: 'User created', user: publicUser(newUser), tempPassword });
 });
 
 app.get('/api/auth/me', requireAuth, (req, res) => res.json(req.user));
 
 app.get('/api/auth/users', requireAdmin, (req, res) => {
-  const users = loadUsers().map(({ password, ...u }) => u);
-  res.json(users);
+  res.json(loadUsers().map(publicUser));
+});
+
+// Edit name, email or role
+app.put('/api/auth/users/:id', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const users = loadUsers();
+  const user = users.find(u => u.id === id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const name = String(req.body?.name ?? user.name ?? user.username).trim();
+  const email = String(req.body?.email ?? user.email ?? '').trim().toLowerCase();
+  const role = req.body?.role ? normalizeRole(req.body.role) : user.role;
+  if (!name) return res.status(400).json({ error: 'Name is required' });
+  if (email && !isEmail(email)) return res.status(400).json({ error: 'Please enter a valid email' });
+  if (email && users.some(u => u.id !== id
+    && ((u.email || '').toLowerCase() === email || u.username.toLowerCase() === email))) {
+    return res.status(409).json({ error: 'A user with this email already exists' });
+  }
+  const adminCount = users.filter(u => u.role === 'admin').length;
+  if (user.role === 'admin' && role !== 'admin' && adminCount === 1) {
+    return res.status(400).json({ error: 'Keep at least one admin' });
+  }
+  if (user.role === 'admin' && role !== 'admin' && user.id === req.user.id) {
+    return res.status(400).json({ error: 'You cannot remove your own admin role' });
+  }
+
+  // Accounts created with an email log in with it, so keep username in sync
+  if (user.email && user.username === user.email && email) user.username = email;
+  user.name = name;
+  user.email = email;
+  user.role = role;
+  saveUsers(users);
+  res.json({ message: 'User updated', user: publicUser(user) });
+});
+
+// New one-time password for a user who lost theirs
+app.post('/api/auth/users/:id/reset-password', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const users = loadUsers();
+  const user = users.find(u => u.id === id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const tempPassword = makeTempPassword();
+  user.password = hashPwd(tempPassword);
+  saveUsers(users);
+  res.json({ message: 'Password reset', tempPassword });
 });
 
 app.delete('/api/auth/users/:id', requireAdmin, (req, res) => {
-  let users = loadUsers().filter(u => u.id !== parseInt(req.params.id));
-  saveUsers(users);
+  const id = Number(req.params.id);
+  const users = loadUsers();
+  const user = users.find(u => u.id === id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.id === req.user.id) return res.status(400).json({ error: 'You cannot delete your own account' });
+  if (user.role === 'admin' && users.filter(u => u.role === 'admin').length === 1) {
+    return res.status(400).json({ error: 'Keep at least one admin' });
+  }
+  saveUsers(users.filter(u => u.id !== id));
   res.json({ message: 'User deleted' });
 });
 
@@ -571,13 +671,39 @@ app.get('/api/model-stats', requireAuth, (req, res) => {
   }
 });
 
+// Gemini usage today (counted by the Python engine), for the sidebar ring
+app.get('/api/usage', requireAdmin, async (req, res) => {
+  try {
+    const response = await fetch(`${PYTHON_API_URL}/usage`);
+    res.status(response.status).json(await response.json());
+  } catch (error) {
+    res.status(502).json({ error: error.message });
+  }
+});
+
 // Catch-all
 app.get(/^(?!\/api\/).*$/, (req, res) => {
   if (!fs.existsSync(distPath)) return res.status(404).send('Frontend not bundled in backend image.');
   return res.sendFile(path.join(distPath, 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`L6S-UI server is running on http://localhost:${PORT}`);
-  console.log(`Default users: admin/admin123 (admin), user/user123 (utilisateur)`);
-});
+const stopBackend = () => {
+  stopPythonApi();
+  if (httpServer) httpServer.close();
+};
+
+process.on('SIGINT', stopBackend);
+process.on('SIGTERM', stopBackend);
+
+startPythonApi()
+  .then(() => {
+    httpServer = app.listen(PORT, () => {
+      console.log(`L6S-UI server is running on http://localhost:${PORT}`);
+      console.log(`Default users: admin/admin123 (admin), user/user123 (utilisateur)`);
+    });
+  })
+  .catch(error => {
+    console.error(`Backend startup failed: ${error.message}`);
+    stopPythonApi();
+    process.exitCode = 1;
+  });

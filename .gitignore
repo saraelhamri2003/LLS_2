@@ -3,3 +3,7 @@ venv/
 node_modules/
 __pycache__/
 .env
+
+**/backend/data/users.json
+**/backend/data/llm_usage.json
+**/App.old.jsx

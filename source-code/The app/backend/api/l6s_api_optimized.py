@@ -15,6 +15,7 @@ import numpy as np
 from pathlib import Path
 import atexit
 import time
+import threading
 
 BASE_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = BASE_DIR.parent
@@ -25,6 +26,8 @@ UNIFIED_JSON_PATH = DATA_DIR / "unified_lss_data_final.json"
 
 # Global variable to cache the brain instance across requests within the same process
 _cached_brain = None
+_cached_model_config = None
+_brain_init_lock = threading.Lock()
 _translation_cache = {}
 
 # Global variable to cache the prompt templates
@@ -163,10 +166,41 @@ def finalize_response(response, is_french, brain):
 
 def get_brain_instance(local_model="llama3:8b", api_model="gemini-pro", temperature=0.3, api_key=None, use_api=False):
     """Get a cached instance of the L6SBrain, creating it if necessary"""
-    global _cached_brain
+    global _cached_brain, _cached_model_config
 
-    if _cached_brain is not None:
+    with _brain_init_lock:
+        if _cached_brain is None:
+            _cached_brain = _initialize_brain_instance(
+                local_model, api_model, temperature, api_key, use_api
+            )
+            _cached_model_config = (local_model, api_model, temperature, api_key)
+        else:
+            model_config = (local_model, api_model, temperature, api_key)
+            if model_config != _cached_model_config:
+                from l6s_llm_manager import LLMManager
+
+                manager = LLMManager(
+                    local_model=local_model,
+                    api_model=api_model,
+                    temperature=temperature,
+                    api_key=api_key,
+                )
+                _cached_brain.llm_manager = manager
+                _cached_brain.llm_available = manager.is_available()
+                _cached_brain.llm = manager if _cached_brain.llm_available else None
+                _cached_model_config = model_config
+
+            if _cached_brain.llm_manager is not None:
+                if use_api:
+                    _cached_brain.llm_manager.switch_to_api()
+                else:
+                    _cached_brain.llm_manager.switch_to_local()
+
         return _cached_brain
+
+
+def _initialize_brain_instance(local_model, api_model, temperature, api_key, use_api):
+    global _cached_brain
 
     parent_dir = BACKEND_DIR
 
@@ -203,13 +237,7 @@ def get_brain_instance(local_model="llama3:8b", api_model="gemini-pro", temperat
             module_path = link_path
             module_name = "link"
         else:
-            print(json.dumps({
-                "content": "Error: Neither core/neo.py nor core/link.py found in backend directory",
-                "type": "text",
-                "chart": None,
-                "dataframe": None
-            }))
-            sys.exit(1)
+            raise FileNotFoundError("Neither core/neo.py nor core/link.py was found.")
 
         # Load the module
         spec = importlib.util.spec_from_file_location(module_name, module_path)
@@ -233,13 +261,9 @@ def get_brain_instance(local_model="llama3:8b", api_model="gemini-pro", temperat
             )
 
         if not brain.data_loaded:
-            print(json.dumps({
-                "content": f"Error: Could not load L6S data. Please ensure {UNIFIED_JSON_PATH} exists and is valid.",
-                "type": "text",
-                "chart": None,
-                "dataframe": None
-            }))
-            sys.exit(1)
+            raise RuntimeError(
+                f"Could not load L6S data. Please ensure {UNIFIED_JSON_PATH} exists and is valid."
+            )
 
         # Cache the brain instance
         _cached_brain = brain
@@ -248,13 +272,7 @@ def get_brain_instance(local_model="llama3:8b", api_model="gemini-pro", temperat
         return brain
 
     except Exception as e:
-        print(json.dumps({
-            "content": f"Error initializing L6SBrain: {str(e)}",
-            "type": "text",
-            "chart": None,
-            "dataframe": None
-        }))
-        sys.exit(1)
+        raise RuntimeError(f"Error initializing L6SBrain: {e}") from e
     finally:
         # Restore original working directory
         os.chdir(original_cwd)
@@ -280,6 +298,12 @@ def process_request(message, use_sidebar_values, sidebar_scores, conversation_hi
         api_key=api_key,
         use_api=use_api
     )
+    # Thinking level for this question: low for simple ones, full for analysis
+    if brain is not None and getattr(brain, "llm_manager", None) is not None:
+        from l6s_llm_manager import choose_thinking_level
+        brain.llm_manager.thinking_level = choose_thinking_level(
+            message, uses_scores=str(use_sidebar_values).lower() == "true"
+        )  
 
     def invoke_llm(prompt):
         if not brain or not getattr(brain, "llm_manager", None) or not brain.llm_manager.is_available():
