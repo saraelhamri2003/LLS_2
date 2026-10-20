@@ -1,7 +1,113 @@
 import json
 import os
+import sys
+import threading
+from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
+
+# ---------------------------------------------------------------------------
+# Question routing (Gemini). The choice is made with instant rules, never with
+# another AI call.
+#   Simple questions  -> light model (SIMPLE_MODEL), or the main model with
+#                        thinking "low" if routing is switched off.
+#   Complex questions -> main model (the one selected in the app) with full
+#                        thinking.
+# If one model is refused (e.g. daily quota reached), the other one answers.
+# ---------------------------------------------------------------------------
+COMPLEX_HINTS = (
+    # English
+    "analy", "strateg", "recommend", "compar", "improve", "reach", "why",
+    "plan", "predict", "scenario", "optimi", "priorit", "roadmap", "diagnos",
+    "what should", "how can i", "how do i", "how to get", "assess",
+    # French
+    "analys", "stratég", "recommand", "compar", "amélior", "atteindre",
+    "pourquoi", "prédi", "scénario", "priori", "feuille de route",
+    "que dois", "comment puis", "comment atteindre", "évalu",
+)
+SIMPLE_LEVEL = os.getenv("THINKING_LEVEL_SIMPLE", "low")
+COMPLEX_LEVEL = os.getenv("THINKING_LEVEL_COMPLEX") or None  # None = model's full default
+
+# Light model for simple questions (own free quota). Set SIMPLE_MODEL= (empty)
+# in .env to switch routing off and use thinking levels on one model instead.
+SIMPLE_MODEL = os.getenv("SIMPLE_MODEL", "gemini-3.5-flash-lite").strip()
+# Fail fast when Google refuses (quota), so the other model can answer instead.
+GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "1"))
+
+
+# ---------------------------------------------------------------------------
+# Daily usage counter (shown in the app's sidebar). Google's free daily quota
+# resets at midnight Pacific time, so the counter uses the Pacific date.
+# Limits can be changed in .env, e.g. LLM_DAILY_LIMITS=gemini-3.8-flash=20,gemini-3.5-flash-lite=500
+# ---------------------------------------------------------------------------
+USAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "llm_usage.json")
+_usage_lock = threading.Lock()
+
+
+def _daily_limits():
+    raw = os.getenv("LLM_DAILY_LIMITS", "gemini-3.8-flash=20,gemini-3.5-flash-lite=500")
+    limits = {}
+    for part in raw.split(","):
+        if "=" in part:
+            name, value = part.split("=", 1)
+            try:
+                limits[name.strip()] = int(value)
+            except ValueError:
+                pass
+    return limits
+
+
+def _pacific_today():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat()
+    except Exception:  # Windows without the tzdata package: use UTC-8
+        return (datetime.now(timezone.utc) - timedelta(hours=8)).date().isoformat()
+
+
+def _read_usage():
+    try:
+        with open(USAGE_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        data = {}
+    if data.get("day") != _pacific_today():
+        data = {"day": _pacific_today(), "counts": {}}
+    data.setdefault("counts", {})
+    return data
+
+
+def record_usage(model_name):
+    with _usage_lock:
+        data = _read_usage()
+        data["counts"][model_name] = data["counts"].get(model_name, 0) + 1
+        try:
+            with open(USAGE_FILE, "w", encoding="utf-8") as handle:
+                json.dump(data, handle)
+        except Exception as e:
+            print(f"[LLM] could not save usage: {e}", file=sys.stderr)
+
+
+def get_usage():
+    with _usage_lock:
+        data = _read_usage()
+    limits = _daily_limits()
+    names = list(dict.fromkeys(list(limits) + list(data["counts"])))
+    return {
+        "day": data["day"],
+        "resets": "midnight Pacific time",
+        "models": [
+            {"model": name, "used": data["counts"].get(name, 0), "limit": limits.get(name)}
+            for name in names
+        ],
+    }
+
+
+def choose_thinking_level(message, uses_scores=False):
+    text = (message or "").strip().lower()
+    if uses_scores or len(text) > 180 or any(hint in text for hint in COMPLEX_HINTS):
+        return COMPLEX_LEVEL
+    return SIMPLE_LEVEL
 
 
 class _OllamaHttpClient:
@@ -47,9 +153,11 @@ class LLMManager:
         self.api_model = api_model
         self.temperature = temperature
         self.api_key = api_key
+        self.thinking_level = None  # set per question by process_request
 
         self._local_llm = self._init_local()
         self._api_llm = self._init_api()
+        self._simple_llm = self._init_simple_gemini()
 
         if self._local_llm:
             self.active = "local"
@@ -87,11 +195,50 @@ class LLMManager:
             return f"api:{self.api_model}"
         return "none"
 
+    @staticmethod
+    def _text_of(result):
+        content = getattr(result, "content", result)
+        if isinstance(content, list):  # Gemini returns a list of parts
+            content = "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        return str(content)
+
+    def _is_simple_question(self):
+        return bool(SIMPLE_LEVEL) and self.thinking_level == SIMPLE_LEVEL
+
+    def _call_gemini(self, llm, model_name, prompt, thinking_level):
+        if thinking_level:
+            print(f"[LLM] {model_name} thinking={thinking_level}", file=sys.stderr)
+            text = self._text_of(llm.invoke(prompt, thinking_level=thinking_level))
+        else:
+            print(f"[LLM] {model_name} thinking=default", file=sys.stderr)
+            text = self._text_of(llm.invoke(prompt))
+        record_usage(model_name)
+        return text
+
     def _invoke_llm(self, llm, prompt):
-        result = llm.invoke(prompt) if hasattr(llm, "invoke") else llm(prompt)
-        if hasattr(result, "content"):
-            return result.content
-        return str(result)
+        uses_gemini = llm is self._api_llm and "gemini" in (self.api_model or "").lower()
+        if not uses_gemini:
+            result = llm.invoke(prompt) if hasattr(llm, "invoke") else llm(prompt)
+            return self._text_of(result)
+
+        main = (self._api_llm, self.api_model, self.thinking_level)
+        light = (self._simple_llm, SIMPLE_MODEL, None) if self._simple_llm is not None else None
+        if self._is_simple_question() and light:
+            attempts = [light, main]
+        else:
+            attempts = [main] + ([light] if light else [])
+
+        last_error = None
+        for client, name, level in attempts:
+            try:
+                return self._call_gemini(client, name, prompt, level)
+            except Exception as e:  # quota reached, model busy...
+                print(f"[LLM] {name} failed: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
+                last_error = e
+        raise last_error
 
     def invoke(self, prompt):
         if self.active == "local":
@@ -109,12 +256,8 @@ class LLMManager:
                 if name != self.active:
                     self.active = name
                 return result_text
-            except Exception as e:
-                import sys
-                print(f"[LLM {name} failed] {type(e).__name__}: {e}", file=sys.stderr)
+            except Exception:
                 continue
-
-                
 
         return self._fallback_response()
 
@@ -159,6 +302,7 @@ class LLMManager:
                     model=self.api_model,
                     temperature=self.temperature,
                     google_api_key=key,
+                    max_retries=GEMINI_MAX_RETRIES,
                 )
             except Exception:
                 return None
@@ -194,6 +338,23 @@ class LLMManager:
                 return None
 
         return None
+
+    def _init_simple_gemini(self):
+        """Second Gemini client for simple questions (only when the main model is Gemini)."""
+        if not SIMPLE_MODEL or self._api_llm is None:
+            return None
+        if "gemini" not in (self.api_model or "").lower() or SIMPLE_MODEL == self.api_model:
+            return None
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            return ChatGoogleGenerativeAI(
+                model=SIMPLE_MODEL,
+                temperature=self.temperature,
+                google_api_key=self.api_key or os.getenv("GOOGLE_API_KEY"),
+                max_retries=GEMINI_MAX_RETRIES,
+            )
+        except Exception:
+            return None
 
     def _fallback_response(self):
         return (
