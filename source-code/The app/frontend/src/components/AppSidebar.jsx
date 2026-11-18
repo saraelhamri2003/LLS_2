@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import {
-  ChevronLeft, Crown, Cpu, Clock, BarChart3, Users, Database, Sun, Moon, User, LogOut, Loader2
+  ChevronLeft, Crown, Cpu, Clock, BarChart3, Users, Database, Sun, Moon, User, LogOut, Loader2, ClipboardList
 } from 'lucide-react';
 import { apiFetch } from '../api';
 import UserForm, { TempPasswordCard } from './UserForm';
+import { useLang } from '../i18n';
 
 const API_MODEL_SUGGESTIONS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
 
@@ -39,6 +40,7 @@ export default function AppSidebar({
   usersApi,
   usageRefreshKey
 }) {
+  const { t } = useLang();
   const [usage, setUsage] = useState(null);
   const [stats, setStats] = useState(null);
   const [created, setCreated] = useState(null); // { user, tempPassword } after a quick add
@@ -68,8 +70,8 @@ export default function AppSidebar({
   const ratio = mainUsage?.limit ? Math.min(1, mainUsage.used / mainUsage.limit) : 0;
   const nearLimit = ratio >= 0.8;
   const usageLine = mainUsage
-    ? `${mainUsage.used}${mainUsage.limit ? `/${mainUsage.limit}` : ''} today`
-    : 'Usage not available yet';
+    ? t('side.usageToday', { used: `${mainUsage.used}${mainUsage.limit ? `/${mainUsage.limit}` : ''}` })
+    : t('side.usageNA');
 
   // Click rules (same as the mockup)
   const toggleSection = (key) => {
@@ -99,7 +101,7 @@ export default function AppSidebar({
     <>
       <div className={`l6s-scrim${expanded ? ' is-on' : ''}`} onClick={() => setExpanded(false)} />
       <aside className={`panel l6s-rail${expanded ? ' is-expanded' : ''}`} aria-label="Sidebar">
-        <button type="button" className="l6s-handle" title="Expand / collapse" onClick={() => setExpanded(!expanded)}>
+        <button type="button" className="l6s-handle" title={t('side.expand')} onClick={() => setExpanded(!expanded)}>
           <ChevronLeft className="w-4 h-4" />
         </button>
 
@@ -117,8 +119,20 @@ export default function AppSidebar({
             </button>
             <div className="l6s-who">
               <b>{name}</b>
-              <small className={isAdmin ? '' : 'is-user'}>{isAdmin ? 'ADMINISTRATOR' : 'USER'}</small>
+              <small className={isAdmin ? '' : 'is-user'}>{isAdmin ? t('side.administrator') : t('side.user')}</small>
             </div>
+          </div>
+
+          {/* consulting: the improvement plan (every user) */}
+          <div className="l6s-sec">{t('side.consulting')}</div>
+          <div className="l6s-grp">
+            <Item
+              icon={ClipboardList}
+              label={t('side.plan')}
+              sub={t('side.planSub')}
+              on={view === 'plan'}
+              onClick={() => navigate(view === 'plan' ? 'chat' : 'plan')}
+            />
           </div>
 
           {isAdmin && (
@@ -144,51 +158,51 @@ export default function AppSidebar({
                   <span className={`l6s-dot${nearLimit ? ' is-off' : ''}`} />
                 </span>
                 <span className="l6s-live__txt l6s-fade">
-                  <b>{modelConfig.useApi ? 'Gemini · API' : 'Local model'}</b><br />
-                  <span>{modelConfig.useApi ? `Smart routing on · ${usageLine}` : modelConfig.localModel}</span>
+                  <b>{modelConfig.useApi ? t('side.liveApi') : t('side.liveLocal')}</b><br />
+                  <span>{modelConfig.useApi ? t('side.routingOn', { usage: usageLine }) : modelConfig.localModel}</span>
                 </span>
               </button>
 
-              <div className="l6s-sec">Model</div>
+              <div className="l6s-sec">{t('side.model')}</div>
               <div className="l6s-grp">
-                <Item icon={Cpu} label="LLM configuration" sub="Mode, model, API key, test" on={section === 'llm'} onClick={() => toggleSection('llm')} />
+                <Item icon={Cpu} label={t('side.llm')} sub={t('side.llmSub')} on={section === 'llm'} onClick={() => toggleSection('llm')} />
               </div>
               {section === 'llm' && (
                 <div className="l6s-detail">
                   <div className="l6s-box">
-                    <div className="l6s-active-line">Active: <b>{activeModelLabel}</b></div>
-                    <span className="l6s-lbl">Mode</span>
+                    <div className="l6s-active-line">{t('side.active')}: <b>{activeModelLabel}</b></div>
+                    <span className="l6s-lbl">{t('side.mode')}</span>
                     <div className="mode-switch" style={{ width: 'max-content' }}>
-                      <button type="button" onClick={() => updateModelConfig({ useApi: false })} className={`mode-button ${modelConfig.useApi ? '' : 'is-active'}`}>Local</button>
-                      <button type="button" onClick={() => updateModelConfig({ useApi: true })} className={`mode-button ${modelConfig.useApi ? 'is-active' : ''}`}>API</button>
+                      <button type="button" onClick={() => updateModelConfig({ useApi: false })} className={`mode-button ${modelConfig.useApi ? '' : 'is-active'}`}>{t('side.local')}</button>
+                      <button type="button" onClick={() => updateModelConfig({ useApi: true })} className={`mode-button ${modelConfig.useApi ? 'is-active' : ''}`}>{t('side.api')}</button>
                     </div>
-                    <div className="l6s-hint">Local uses Ollama on the server; API uses Gemini.</div>
+                    <div className="l6s-hint">{t('side.modeHint')}</div>
 
                     {modelConfig.useApi ? (
                       <>
-                        <label className="l6s-lbl" htmlFor="l6s-api-model">Main model (complex questions)</label>
+                        <label className="l6s-lbl" htmlFor="l6s-api-model">{t('side.mainModel')}</label>
                         <input id="l6s-api-model" className="l6s-field" list="l6s-api-models" value={modelConfig.apiModel}
                           onChange={(e) => updateModelConfig({ apiModel: e.target.value })} placeholder="gemini-3.8-flash" />
                         <datalist id="l6s-api-models">
                           {API_MODEL_SUGGESTIONS.map((m) => <option key={m} value={m} />)}
                         </datalist>
 
-                        <label className="l6s-lbl" htmlFor="l6s-api-key">API key</label>
+                        <label className="l6s-lbl" htmlFor="l6s-api-key">{t('side.apiKey')}</label>
                         <input id="l6s-api-key" className="l6s-field" type="password" value={modelConfig.apiKey}
-                          onChange={(e) => updateModelConfig({ apiKey: e.target.value })} placeholder="Leave blank to use the server key" />
-                        <div className="l6s-hint">The server key (.env) is used when this is empty. A key typed here is never saved.</div>
+                          onChange={(e) => updateModelConfig({ apiKey: e.target.value })} placeholder={t('side.apiKeyPh')} />
+                        <div className="l6s-hint">{t('side.apiKeyHint')}</div>
 
                         <div className="l6s-route">
-                          <b>Automatic routing</b><br />
-                          Simple questions → gemini-3.5-flash-lite<br />
-                          Complex questions → {mainModel || 'main model'}<br />
-                          If one model is out of quota, the other answers.
+                          <b>{t('side.routing')}</b><br />
+                          {t('side.routingSimple')}<br />
+                          {t('side.routingComplex', { model: mainModel || t('side.mainModelFallback') })}<br />
+                          {t('side.routingFail')}
                         </div>
 
                         <div className="l6s-row">
                           <button type="button" className="button-secondary" onClick={runApiTest} disabled={apiTestState.status === 'loading'}>
                             {apiTestState.status === 'loading' && <Loader2 className="w-4 h-4 animate-spin" />}
-                            Test connection
+                            {t('side.test')}
                           </button>
                           {apiTestBadge && apiTestState.status !== 'loading' && (
                             <span className={apiTestBadge.className}>{apiTestBadge.label}</span>
@@ -200,7 +214,7 @@ export default function AppSidebar({
                       </>
                     ) : (
                       <>
-                        <label className="l6s-lbl" htmlFor="l6s-local-model">Local model</label>
+                        <label className="l6s-lbl" htmlFor="l6s-local-model">{t('side.localModel')}</label>
                         <input id="l6s-local-model" className="l6s-field" list="l6s-local-models" value={modelConfig.localModel}
                           onChange={(e) => updateModelConfig({ localModel: e.target.value })} placeholder="llama3:8b" />
                         <datalist id="l6s-local-models">
@@ -213,12 +227,12 @@ export default function AppSidebar({
               )}
 
               <div className="l6s-grp">
-                <Item icon={Clock} label="Usage today" sub="Requests per model" on={section === 'usage'} onClick={() => toggleSection('usage')} />
+                <Item icon={Clock} label={t('side.usage')} sub={t('side.usageSub')} on={section === 'usage'} onClick={() => toggleSection('usage')} />
               </div>
               {section === 'usage' && (
                 <div className="l6s-detail">
                   <div className="l6s-box">
-                    {!usage && <div className="l6s-muted" style={{ fontSize: 12.5 }}>Loading…</div>}
+                    {!usage && <div className="l6s-muted" style={{ fontSize: 12.5 }}>{t('side.loading')}</div>}
                     {usage?.models?.map((m) => {
                       const pct = m.limit ? Math.min(100, (m.used / m.limit) * 100) : 0;
                       return (
@@ -228,22 +242,22 @@ export default function AppSidebar({
                         </div>
                       );
                     })}
-                    <div className="l6s-hint">Free daily limits reset at midnight Pacific time (about 8:00 in Morocco).</div>
+                    <div className="l6s-hint">{t('side.usageHint')}</div>
                   </div>
                 </div>
               )}
 
               <div className="l6s-grp">
-                <Item icon={BarChart3} label="Model statistics" sub="Accuracy & metrics" on={section === 'stats'} onClick={() => toggleSection('stats')} />
+                <Item icon={BarChart3} label={t('side.stats')} sub={t('side.statsSub')} on={section === 'stats'} onClick={() => toggleSection('stats')} />
               </div>
               {section === 'stats' && (
                 <div className="l6s-detail">
                   <div className="l6s-stats">
                     {[
-                      ['Samples', stats?.trainingSamples ?? '…'],
-                      ['RF trees', stats?.rfTrees ?? '…'],
-                      ['CSF factors', stats?.csfFactors ?? '…'],
-                      ['Strategies', stats?.strategies ?? '…']
+                      [t('side.stat.samples'), stats?.trainingSamples ?? '…'],
+                      [t('side.stat.trees'), stats?.rfTrees ?? '…'],
+                      [t('side.stat.factors'), stats?.csfFactors ?? '…'],
+                      [t('side.stat.strategies'), stats?.strategies ?? '…']
                     ].map(([label, value]) => (
                       <div className="l6s-stat" key={label}><small>{label}</small><b>{value}</b></div>
                     ))}
@@ -251,12 +265,12 @@ export default function AppSidebar({
                 </div>
               )}
 
-              <div className="l6s-sec">Admin</div>
+              <div className="l6s-sec">{t('side.admin')}</div>
               <div className="l6s-grp">
                 <Item
                   icon={Users}
-                  label="Manage users"
-                  sub="Quick add · click again for all users"
+                  label={t('side.users')}
+                  sub={t('side.usersSub')}
                   on={view === 'users' || section === 'users'}
                   onClick={clickUsers}
                   onDoubleClick={() => navigate('users')}
@@ -269,35 +283,35 @@ export default function AppSidebar({
                       <TempPasswordCard user={created.user} password={created.tempPassword} onClose={() => setCreated(null)} />
                     </div>
                   )}
-                  <UserForm submitLabel="+ Add user" onSubmit={quickAdd} resetKey={formKey} />
+                  <UserForm submitLabel={t('uf.add')} onSubmit={quickAdd} resetKey={formKey} />
                   <button type="button" className="l6s-openall" onClick={() => navigate('users')}>
-                    <span>See all users<small>or click the users icon again</small></span>
+                    <span>{t('side.seeAll')}<small>{t('side.seeAllSub')}</small></span>
                     <span>{usersApi.users.length} →</span>
                   </button>
                 </div>
               )}
               <div className="l6s-grp">
-                <Item icon={Database} label="Manage companies" sub="Opens the full table · click again to close" on={view === 'companies'} onClick={clickCompanies} />
+                <Item icon={Database} label={t('side.companies')} sub={t('side.companiesSub')} on={view === 'companies'} onClick={clickCompanies} />
               </div>
             </>
           )}
 
           <div className="l6s-grow" />
           <div className="l6s-foot l6s-grp">
-            <Item icon={isDark ? Sun : Moon} label={isDark ? 'Light mode' : 'Dark mode'} onClick={onToggleTheme} />
-            <Item icon={User} label="My profile" on={section === 'profile'} onClick={() => toggleSection('profile')} />
+            <Item icon={isDark ? Sun : Moon} label={isDark ? t('side.light') : t('side.dark')} onClick={onToggleTheme} />
+            <Item icon={User} label={t('side.profile')} on={section === 'profile'} onClick={() => toggleSection('profile')} />
             {section === 'profile' && (
               <div className="l6s-detail" style={{ padding: '4px 0 8px' }}>
                 <div className="l6s-box" style={{ fontSize: 13 }}>
                   <div><b>{name}</b></div>
                   <div className="l6s-muted">{currentUser?.email || currentUser?.username}</div>
                   <div style={{ marginTop: 8 }}>
-                    <span className={`l6s-role${isAdmin ? '' : ' is-user'}`}>{isAdmin ? 'ADMIN' : 'USER'}</span>
+                    <span className={`l6s-role${isAdmin ? '' : ' is-user'}`}>{isAdmin ? t('role.ADMIN') : t('role.USER')}</span>
                   </div>
                 </div>
               </div>
             )}
-            <Item icon={LogOut} label="Logout" danger onClick={onLogout} />
+            <Item icon={LogOut} label={t('side.logout')} danger onClick={onLogout} />
           </div>
         </div>
       </aside>

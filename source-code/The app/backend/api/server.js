@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import crypto from 'crypto';
+import planRoutes from './planRoutes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -492,19 +493,20 @@ app.post('/calculate', async (req, res) => {
 
     let prediction = typeof result.dataframe?.prediction === 'number' ? result.dataframe.prediction : null;
     if (prediction === null) {
-      prediction = extractMetric(result.content, /Predicted performance:\s*([0-9.]+)/i)
+      prediction = extractMetric(result.content, /(?:Predicted performance|Performance prédite)\s*:\s*([0-9.]+)/i)
         ?? extractMetric(result.content, /Performance[^0-9]*([0-9.]+)%/i);
     }
 
     let confidenceValue = typeof result.dataframe?.confidence === 'number'
       ? result.dataframe.confidence
-      : extractMetric(result.content, /Confidence level:\s*([0-9.]+)/i);
+      : extractMetric(result.content, /(?:Confidence level|Niveau de confiance)\s*:\s*([0-9.]+)/i);
 
     const strategy = result.dataframe?.strategy
-      || (result.content?.match(/Recommended strategy:\s*([^\n]+)/i)?.[1] || null);
+      || (result.content?.match(/(?:Recommended strategy|Stratégie recommandée)\s*:\s*([^\n]+)/i)?.[1] || null);
 
+    const isFr = String(language || '').toLowerCase().startsWith('fr');
     const recommendations = [
-      ...(strategy ? [`Recommended strategy: ${strategy}`] : []),
+      ...(strategy ? [`${isFr ? 'Stratégie recommandée' : 'Recommended strategy'}: ${strategy}`] : []),
       ...extractRecommendationLines(result.content)
     ];
 
@@ -536,6 +538,16 @@ app.post('/calculate', async (req, res) => {
 
 app.get('/csf-levels', (req, res) => {
   const lang = String(req.query.lang || 'fr').toLowerCase();
+  // English: read the saved translation (instant, no AI call)
+  const EN_PATH = path.join(BACKEND_DIR, 'data', 'csf_levels_en.json');
+  if (lang.startsWith('en') && fs.existsSync(EN_PATH)) {
+    try {
+      const { labels, levels, prescriptions } = JSON.parse(fs.readFileSync(EN_PATH, 'utf-8'));
+      return res.json({ labels, levels, prescriptions });
+    } catch (error) {
+      return res.status(500).json({ error: 'Failed to read csf_levels_en.json.' });
+    }
+  }
   if (lang.startsWith('en')) {
     runPython({
       message: `__CSF_LEVELS__${JSON.stringify({ lang: 'en' })}`,
@@ -581,9 +593,10 @@ app.get('/csf-levels', (req, res) => {
         levels[mapped][level.level] = level.description;
         prescriptions[mapped][level.level] = level.prescription || 'No prescription available';
       });
+      // French names and suffixes (this branch serves lang=fr)
       const suffix = mapped.startsWith('IL') ? ' (Lean)'
-        : mapped.startsWith('IS') ? ' (Six Sigma)' : ' (Maturity)';
-      labels[mapped] = `${factor.category || factor.factor || mapped}${suffix}`;
+        : mapped.startsWith('IS') ? ' (Six Sigma)' : ' (Maturité)';
+      labels[mapped] = `${factor.factor || factor.category || mapped}${suffix}`;
     });
 
     res.json({ levels, labels, prescriptions });
@@ -680,6 +693,29 @@ app.get('/api/usage', requireAdmin, async (req, res) => {
     res.status(502).json({ error: error.message });
   }
 });
+
+// ============================================================
+// PLAN, DATABASE AND FILES (see planRoutes.js, planEngine.js, db.js)
+// ============================================================
+// Predicted performance for a set of levels, using the same engine as /calculate
+const predictFromParameters = async (parameters) => {
+  try {
+    const sidebarScores = buildSidebarScores(parameters);
+    if (!Object.keys(sidebarScores).length) return null;
+    const result = await runPython({ message: 'calculate performance', useSidebarValues: true, sidebarScores, language: 'en' });
+    let prediction = typeof result.dataframe?.prediction === 'number' ? result.dataframe.prediction : null;
+    if (prediction === null) {
+      prediction = extractMetric(result.content, /(?:Predicted performance|Performance prédite)\s*:\s*([0-9.]+)/i)
+        ?? extractMetric(result.content, /Performance[^0-9]*([0-9.]+)%/i);
+    }
+    return { prediction, strategy: result.dataframe?.strategy || null };
+  } catch (error) {
+    console.error(`[plan] prediction failed: ${error.message}`);
+    return null;
+  }
+};
+
+app.use('/api', planRoutes({ requireAuth, predict: predictFromParameters }));
 
 // Catch-all
 app.get(/^(?!\/api\/).*$/, (req, res) => {

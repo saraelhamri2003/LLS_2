@@ -106,11 +106,27 @@ def _strip_translation_preamble(text):
     return cleaned.strip()
 
 
+# English versions of the CSF questions and actions, translated once and saved
+# (data/csf_levels_en.json), so they never need the AI at runtime.
+_EN_FILE = Path(__file__).resolve().parent.parent / "data" / "csf_levels_en.json"
+try:
+    with open(_EN_FILE, "r", encoding="utf-8") as _f:
+        _FR_TO_EN = json.load(_f).get("fr_to_en", {})
+except Exception:
+    _FR_TO_EN = {}
+
+
 def translate_text(text, target_lang, brain):
     if not text or not isinstance(text, str):
         return text
     lang = _normalize_lang(target_lang)
     if lang == "fr":
+        return text
+    saved = _FR_TO_EN.get(text.strip())
+    if saved:
+        return saved
+    # Answers written by Gemini are already English: no extra AI call needed
+    if lang == "en" and not _looks_french(text):
         return text
     cache_key = (lang, text)
     if cache_key in _translation_cache:
@@ -120,11 +136,8 @@ def translate_text(text, target_lang, brain):
 
     def invoke_translation(prompt):
         try:
-            manager = brain.llm_manager
-            available = manager.get_available_models() if hasattr(manager, "get_available_models") else {}
-            if available.get("local", {}).get("available", False):
-                return manager.invoke_local_only(prompt)
-            return manager.invoke(prompt)
+            # Use the active model (Gemini when API mode is on)
+            return brain.llm_manager.invoke(prompt)
         except Exception:
             return ""
 
@@ -298,12 +311,13 @@ def process_request(message, use_sidebar_values, sidebar_scores, conversation_hi
         api_key=api_key,
         use_api=use_api
     )
+
     # Thinking level for this question: low for simple ones, full for analysis
     if brain is not None and getattr(brain, "llm_manager", None) is not None:
         from l6s_llm_manager import choose_thinking_level
         brain.llm_manager.thinking_level = choose_thinking_level(
             message, uses_scores=str(use_sidebar_values).lower() == "true"
-        )  
+        )
 
     def invoke_llm(prompt):
         if not brain or not getattr(brain, "llm_manager", None) or not brain.llm_manager.is_available():
@@ -1589,6 +1603,8 @@ IMPORTANT: If CSF Level Descriptions with Prescriptions are provided in the cont
                     # Add prescription for this level if available
                     if hasattr(brain, 'csf_level_prescriptions') and k in brain.csf_level_prescriptions:
                         prescription = brain.csf_level_prescriptions[k].get(v, "No prescription available")
+                        if not is_french:
+                            prescription = translate_text(prescription, "en", brain)
                         scores_with_descriptions.append(f"  → Action: {prescription}")
                     scores_with_descriptions.append("")  # Add blank line for better readability
 
