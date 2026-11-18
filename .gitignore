@@ -7,3 +7,7 @@ __pycache__/
 **/backend/data/users.json
 **/backend/data/llm_usage.json
 **/App.old.jsx
+
+# plan database and uploaded files (private company data)
+**/backend/data/l6s.db*
+**/backend/uploads/

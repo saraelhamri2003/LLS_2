@@ -1604,3 +1604,25 @@ table.l6s-table {
   border-color: var(--accent);
   box-shadow: var(--glow);
 }
+
+/* language switch in the top bar */
+.l6s-lang {
+  gap: 6px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+.l6s-lang span {
+  opacity: 0.45;
+  font-weight: 700;
+}
+.l6s-lang span.is-on {
+  opacity: 1;
+  color: var(--accent);
+}
+[data-theme="dark"] .l6s-lang span.is-on {
+  color: var(--accent-2);
+}
+.l6s-lang .l6s-lang__sep {
+  opacity: 0.3;
+  font-weight: 400;
+}

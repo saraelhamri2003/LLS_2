@@ -1,10 +1,13 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Send, Calculator, MessageSquare, TrendingUp, AlertCircle, Loader2, ClipboardCheck, ArrowLeft, Trash2 } from 'lucide-react';
+import { Send, Calculator, MessageSquare, TrendingUp, AlertCircle, Loader2, ClipboardCheck, ClipboardList, ArrowLeft, Trash2, Globe } from 'lucide-react';
 import AppSidebar from './components/AppSidebar';
 import CompaniesPage from './components/CompaniesPage';
 import UsersPage from './components/UsersPage';
+import PlanPage from './components/PlanPage';
+import { apiFetch } from './api';
 import useUsers from './hooks/useUsers';
 import './layout.css';
+import { LangContext, makeT, makeTerm } from './i18n';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:5001';
 
@@ -119,7 +122,10 @@ const INTRO_MESSAGES = [
   }
 ];
 
-const getIntroMessages = () => INTRO_MESSAGES.map((message) => ({ ...message }));
+const getIntroMessages = () => INTRO_MESSAGES.map((message, i) => ({ ...message, introKey: `intro.msg${i + 1}` }));
+const savedLang = () => {
+  try { return localStorage.getItem('lss_lang') === 'fr' ? 'fr' : 'en'; } catch { return 'en'; }
+};
 
 const createEmptyParameters = () => ({
   IL: Array(7).fill(''),
@@ -140,7 +146,13 @@ const LeanSixSigmaChatbot = () => {
   const [activeTab, setActiveTab] = useState('chat');
   const [themeMode, setThemeMode] = useState(() => localStorage.getItem('lss_theme') || 'light');
   const [showIntro, setShowIntro] = useState(true);
-  const [uiLanguage, setUiLanguage] = useState('en');
+  const [uiLanguage, setUiLanguage] = useState(savedLang);
+  const t = useMemo(() => makeT(uiLanguage), [uiLanguage]);
+  const term = useMemo(() => makeTerm(uiLanguage), [uiLanguage]);
+  useEffect(() => {
+    try { localStorage.setItem('lss_lang', uiLanguage); } catch { /* private mode */ }
+    document.documentElement.lang = uiLanguage;
+  }, [uiLanguage]);
   const [loadingMessage, setLoadingMessage] = useState('');
   const [parameters, setParameters] = useState(createEmptyParameters());
   const [panelsCollapsed, setPanelsCollapsed] = useState(false);
@@ -152,6 +164,7 @@ const LeanSixSigmaChatbot = () => {
   });
   const [csfLevels, setCsfLevels] = useState({ levels: {}, labels: {}, prescriptions: {} });
   const [calcResult, setCalcResult] = useState(null);
+  const [savedAssessmentId, setSavedAssessmentId] = useState(null);
   const [lastCalcParams, setLastCalcParams] = useState(createEmptyParameters());
   const [showModelSettings, setShowModelSettings] = useState(false);
   const [modelConfig, setModelConfig] = useState(() => {
@@ -176,7 +189,7 @@ const LeanSixSigmaChatbot = () => {
     } catch { return null; }
   });
   // ===== NEW LAYOUT STATE =====
-  const [view, setView] = useState('chat'); // 'chat' | 'guided' | 'companies' | 'users'
+  const [view, setView] = useState('chat'); // 'chat' | 'guided' | 'plan' | 'companies' | 'users'
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const [sidebarSection, setSidebarSection] = useState(null);
   const [toast, setToast] = useState(null);
@@ -213,7 +226,7 @@ const LeanSixSigmaChatbot = () => {
     }
     const firstUser = messages.find((m) => m.role === 'user');
     const title = firstUser?.content?.slice(0, 80)
-      || (messages.some((m) => m.type === 'calculation') ? 'Performance calculation' : 'Conversation');
+      || (messages.some((m) => m.type === 'calculation') ? t('log.calcTitle') : t('log.convTitle'));
     setConversations((prev) => {
       const existing = prev.find((c) => c.id === id);
       const updated = {
@@ -238,11 +251,11 @@ const LeanSixSigmaChatbot = () => {
 
   const timeAgo = (ms) => {
     const minutes = Math.round((Date.now() - ms) / 60000);
-    if (minutes < 1) return 'just now';
-    if (minutes < 60) return `${minutes} min ago`;
+    if (minutes < 1) return t('time.now');
+    if (minutes < 60) return t('time.min', { n: minutes });
     const hours = Math.round(minutes / 60);
-    if (hours < 24) return `${hours} h ago`;
-    return new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    if (hours < 24) return t('time.hours', { n: hours });
+    return new Date(ms).toLocaleDateString(uiLanguage === 'fr' ? 'fr-FR' : 'en-GB', { day: 'numeric', month: 'short' });
   };
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
@@ -278,16 +291,16 @@ const LeanSixSigmaChatbot = () => {
   const apiTestBadge = useMemo(() => {
     if (apiTestState.status === 'idle') return null;
     if (apiTestState.status === 'loading') {
-      return { label: 'Testing', className: 'badge badge--neutral' };
+      return { label: t('badge.testing'), className: 'badge badge--neutral' };
     }
     if (apiTestState.status === 'api') {
-      return { label: 'API OK', className: 'badge badge--low' };
+      return { label: t('badge.ok'), className: 'badge badge--low' };
     }
     if (apiTestState.status === 'fallback') {
-      return { label: 'Fallback', className: 'badge badge--mid' };
+      return { label: t('badge.fallback'), className: 'badge badge--mid' };
     }
-    return { label: 'Error', className: 'badge badge--high' };
-  }, [apiTestState.status]);
+    return { label: t('badge.error'), className: 'badge badge--high' };
+  }, [apiTestState.status, t]);
   const guidedStatus = assistedAssessment.active
     ? `In progress ${assistedAssessment.stepIndex + 1}/${ASSISTED_STEPS.length}`
     : assistedAssessment.review
@@ -300,11 +313,7 @@ const LeanSixSigmaChatbot = () => {
       setLoadingMessage('');
       return;
     }
-    const steps = [
-      'Analyzing your question...',
-      'Reviewing L6S knowledge base...',
-      'Generating response...'
-    ];
+    const steps = [t('load.1'), t('load.2'), t('load.3')];
     let index = 0;
     setLoadingMessage(steps[index]);
     const interval = setInterval(() => {
@@ -491,7 +500,7 @@ const LeanSixSigmaChatbot = () => {
     return (
       <div className={`mt-3 rounded-xl border p-4 ${themeClass('border-slate-800 bg-slate-900/80', 'border-slate-200 bg-white')}`}>
         <div className={`text-sm font-semibold ${themeClass('text-slate-100', 'text-slate-900')}`}>
-          {title || dataset.label || 'CSF Profile'}
+          {term(title || dataset.label || 'CSF Profile')}
         </div>
         <div className={`mt-3 grid gap-4 ${showRadar ? 'md:grid-cols-[220px_1fr]' : ''}`}>
           {showRadar && (
@@ -531,21 +540,21 @@ const LeanSixSigmaChatbot = () => {
     return (
       <div className={`mt-4 rounded-xl border p-4 ${themeClass('border-slate-800 bg-slate-900/80', 'border-slate-200 bg-white')}`}>
         <div className={`text-sm font-semibold ${themeClass('text-slate-100', 'text-slate-900')}`}>
-          Performance Table
+          {t('tbl.performance')}
         </div>
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="stat-card stat-card--strategy">
-            <div className="stat-card__label">Strategy</div>
+            <div className="stat-card__label">{t('tbl.strategy')}</div>
             <div className="stat-card__value">{summary.recommended_strategy || 'N/A'}</div>
           </div>
           <div className="stat-card stat-card--current">
-            <div className="stat-card__label">Current</div>
+            <div className="stat-card__label">{t('tbl.current')}</div>
             <div className="stat-card__value stat-card__value--big">
               {formatMetric(summary.current_performance)}%
             </div>
           </div>
           <div className="stat-card stat-card--target">
-            <div className="stat-card__label">Target</div>
+            <div className="stat-card__label">{t('tbl.target')}</div>
             <div className="stat-card__value stat-card__value--big">
               {formatMetric(summary.target_performance)}%
             </div>
@@ -557,11 +566,11 @@ const LeanSixSigmaChatbot = () => {
             <table className="min-w-full text-xs data-table">
               <thead>
                 <tr className={themeClass('text-slate-400', 'text-slate-500')}>
-                  <th className="px-2 py-2 text-left">Criterion</th>
-                  <th className="px-2 py-2 text-right">Weight</th>
-                  <th className="px-2 py-2 text-right">Current</th>
-                  <th className="px-2 py-2 text-right">Target</th>
-                  <th className="px-2 py-2 text-right">Gap</th>
+                  <th className="px-2 py-2 text-left">{t('tbl.criterion')}</th>
+                  <th className="px-2 py-2 text-right">{t('tbl.weight')}</th>
+                  <th className="px-2 py-2 text-right">{t('tbl.current')}</th>
+                  <th className="px-2 py-2 text-right">{t('tbl.target')}</th>
+                  <th className="px-2 py-2 text-right">{t('tbl.gap')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -571,7 +580,7 @@ const LeanSixSigmaChatbot = () => {
                   const gapLabel = gapValue === 'N/A' ? 'N/A' : `${gapValue}%`;
                   return (
                     <tr key={`${row.criterion}-${index}`} className={themeClass('border-slate-800', 'border-slate-200')}>
-                      <td className={`px-2 py-2 ${themeClass('text-slate-200', 'text-slate-700')}`}>{row.criterion}</td>
+                      <td className={`px-2 py-2 ${themeClass('text-slate-200', 'text-slate-700')}`}>{term(row.criterion)}</td>
                       <td className={`px-2 py-2 text-right ${themeClass('text-slate-300', 'text-slate-600')}`}>{formatMetric(row.weight, 3)}</td>
                       <td className={`px-2 py-2 text-right ${themeClass('text-slate-300', 'text-slate-600')}`}>{formatMetric(row.real_performance)}%</td>
                       <td className={`px-2 py-2 text-right ${themeClass('text-slate-300', 'text-slate-600')}`}>{formatMetric(row.target_performance)}%</td>
@@ -591,21 +600,21 @@ const LeanSixSigmaChatbot = () => {
             {subEntries.map(([category, rows]) => (
               <div key={category} className={`criteria-card ${getCategoryToneClass(category)}`}>
                 <div className={`criteria-title text-xs ${themeClass('text-slate-200', 'text-slate-700')}`}>
-                  {category}
+                  {term(category)}
                 </div>
                 <div className="mt-2 overflow-x-auto">
                   <table className="min-w-full text-xs data-table data-table--compact">
                     <thead>
                       <tr className={themeClass('text-slate-400', 'text-slate-500')}>
-                        <th className="px-2 py-1 text-left">Sub-criterion</th>
-                        <th className="px-2 py-1 text-right">Weight</th>
-                        <th className="px-2 py-1 text-right">Contribution</th>
+                        <th className="px-2 py-1 text-left">{t('tbl.subCriterion')}</th>
+                        <th className="px-2 py-1 text-right">{t('tbl.weight')}</th>
+                        <th className="px-2 py-1 text-right">{t('tbl.contribution')}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {(rows || []).map((row, index) => (
                         <tr key={`${category}-${index}`} className={themeClass('border-slate-800', 'border-slate-200')}>
-                          <td className={`px-2 py-1 ${themeClass('text-slate-200', 'text-slate-700')}`}>{row.subcategory}</td>
+                          <td className={`px-2 py-1 ${themeClass('text-slate-200', 'text-slate-700')}`}>{term(row.subcategory)}</td>
                           <td className={`px-2 py-1 text-right ${themeClass('text-slate-300', 'text-slate-600')}`}>{formatMetric(row.weight, 3)}</td>
                           <td className={`px-2 py-1 text-right ${themeClass('text-slate-300', 'text-slate-600')}`}>{formatMetric(row.contribution)}%</td>
                         </tr>
@@ -632,7 +641,7 @@ const LeanSixSigmaChatbot = () => {
         const nextLevel = Math.min(current + 1, 5);
         const code = `${prefix}${index + 1}`;
         const actionMap = csfLevels.prescriptions?.[code] || {};
-        const nextAction = actionMap[nextLevel] || (current >= 5 ? 'Maintain current level.' : 'No prescription available.');
+        const nextAction = current >= 5 ? t('tbl.maintain') : (actionMap[nextLevel] || t('tbl.noPrescription'));
 
         actions.push({
           code,
@@ -657,16 +666,16 @@ const LeanSixSigmaChatbot = () => {
     return (
       <div className={`mt-4 rounded-xl border p-4 ${themeClass('border-slate-800 bg-slate-900/80', 'border-slate-200 bg-white')}`}>
         <div className={`text-sm font-semibold ${themeClass('text-slate-100', 'text-slate-900')}`}>
-          Next-Level Action Table
+          {t('tbl.nextLevel')}
         </div>
         <div className="mt-3 overflow-x-auto">
           <table className="min-w-full text-xs data-table">
             <thead>
               <tr className={themeClass('text-slate-400', 'text-slate-500')}>
-                <th className="px-2 py-2 text-left">Factor</th>
-                <th className="px-2 py-2 text-right">Current</th>
-                <th className="px-2 py-2 text-right">Next</th>
-                <th className="px-2 py-2 text-left">Action to Reach Next Level</th>
+                <th className="px-2 py-2 text-left">{t('tbl.factor')}</th>
+                <th className="px-2 py-2 text-right">{t('tbl.current')}</th>
+                <th className="px-2 py-2 text-right">{t('tbl.next')}</th>
+                <th className="px-2 py-2 text-left">{t('tbl.actionNext')}</th>
               </tr>
             </thead>
             <tbody>
@@ -705,7 +714,7 @@ const LeanSixSigmaChatbot = () => {
   const renderTargetActionTable = (table) => {
     if (!table?.rows?.length) return null;
 
-    const title = table.title || 'Target Action Table';
+    const title = table.title || t('tbl.targetAction');
     const normalizeLevel = (value) => {
       if (value === null || value === undefined || value === '') return null;
       const num = Math.round(Number(value));
@@ -763,17 +772,17 @@ const LeanSixSigmaChatbot = () => {
         </div>
         {needsCurrent && (
           <div className={`mt-2 text-xs ${themeClass('text-slate-400', 'text-slate-500')}`}>
-            Provide current CSF scores to personalize the steps.
+            {t('tbl.provideScores')}
           </div>
         )}
         <div className="mt-3 overflow-x-auto">
           <table className="min-w-full text-xs align-top data-table data-table--compact">
             <thead>
               <tr className={themeClass('text-slate-400', 'text-slate-500')}>
-                <th className="px-2 py-2 text-left">Factor</th>
-                {showCurrent && <th className="px-2 py-2 text-right">Current</th>}
-                <th className="px-2 py-2 text-right">Target</th>
-                <th className="px-2 py-2 text-left">Steps to Reach Target</th>
+                <th className="px-2 py-2 text-left">{t('tbl.factor')}</th>
+                {showCurrent && <th className="px-2 py-2 text-right">{t('tbl.current')}</th>}
+                <th className="px-2 py-2 text-right">{t('tbl.target')}</th>
+                <th className="px-2 py-2 text-left">{t('tbl.steps')}</th>
               </tr>
             </thead>
             <tbody>
@@ -901,7 +910,7 @@ const LeanSixSigmaChatbot = () => {
       setSidebarSection(null);
       return;
     }
-    if (next === 'companies' || next === 'users') setSidebarSection(null);
+    if (next === 'companies' || next === 'users' || next === 'plan') setSidebarSection(null);
     setView(next);
   };
 
@@ -910,7 +919,7 @@ const LeanSixSigmaChatbot = () => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
       if (sidebarExpanded) { setSidebarExpanded(false); return; }
-      if (view === 'companies' || view === 'users') navigate('chat');
+      if (view === 'companies' || view === 'users' || view === 'plan') navigate('chat');
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -1188,10 +1197,23 @@ const LeanSixSigmaChatbot = () => {
       setCalcResult(data);
       setLastCalcParams(paramSet);
 
+      // Save each complete test in the database: the plan is built from the latest one
+      const complete = ['IL', 'IS', 'IM'].every((g) => paramSet[g]?.every((v) => String(v).trim() !== ''));
+      if (complete) {
+        apiFetch('/api/assessments', {
+          method: 'POST',
+          body: { parameters: paramSet, prediction: data.prediction, strategy: data.parameter_analysis?.strategy || null }
+        }).then((saved) => setSavedAssessmentId(saved.id)).catch(() => setSavedAssessmentId(null));
+      }
+
       if (addToChat) {
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: `Analysis Complete!\n\nPredicted Performance: ${data.prediction?.toFixed(2) || 'N/A'}%\nConfidence: ${data.confidence || 'N/A'}\n\nRecommendations:\n${data.recommendations?.map((r, i) => `${i + 1}. ${r}`).join('\n') || 'Process optimization suggestions based on your parameters.'}`,
+          content: t('chat.analysisDone', {
+            pred: data.prediction?.toFixed(2) || 'N/A',
+            conf: data.confidence ? t(`conf.${data.confidence}`) : 'N/A',
+            recs: data.recommendations?.map((r, i) => `${i + 1}. ${r}`).join('\n') || t('chat.analysisDefaultRec')
+          }),
           type: 'calculation',
           chart: data.chart,
           performance_table: data.performance_table,
@@ -1226,7 +1248,7 @@ const LeanSixSigmaChatbot = () => {
       if (addToChat) {
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: 'Demo Analysis Complete! Connect to your backend for real predictions.',
+          content: t('chat.demoDone'),
           type: 'calculation',
           calcSnapshot: {
             parameters: paramSet,
@@ -1249,7 +1271,8 @@ const LeanSixSigmaChatbot = () => {
     const levelMap = csfLevels.levels?.[step.code] || {};
     return DEFAULT_LEVEL_CHOICES.map((choice) => ({
       ...choice,
-      detail: levelMap[choice.level] || choice.detail
+      title: t(`level.${choice.level}`),
+      detail: levelMap[choice.level] || t(`level.${choice.level}.detail`)
     }));
   };
 
@@ -1285,7 +1308,7 @@ const LeanSixSigmaChatbot = () => {
     setActiveTab('chat');
     setMessages(prev => [...prev, {
       role: 'assistant',
-      content: 'Guided assessment complete. Calculating your predicted performance now.'
+      content: t('chat.guidedDone')
     }]);
     await submitCalculation(updatedParams, true);
   };
@@ -1405,7 +1428,7 @@ const LeanSixSigmaChatbot = () => {
       setInput('');
     }
     setLoading(true);
-    setLoadingMessage('Analyzing your question...');
+    setLoadingMessage(t('load.1'));
 
     try {
       const historyPayload = [...messages, userMessage]
@@ -1459,7 +1482,7 @@ ${scoreContext}` : messageText;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `Backend error: ${errorMessage} Please ensure your backend API is running at ${API_BASE}.`
+        content: t('chat.backendError', { msg: errorMessage, url: API_BASE })
       }]);
     } finally {
       setLoading(false);
@@ -1555,10 +1578,10 @@ ${scoreContext}` : messageText;
       if (messageIndex !== null) {
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: `Explanation error: ${errorMessage}`
+          content: t('chat.explainError', { msg: errorMessage })
         }]);
       } else {
-        setCalcExplanation(`Explanation error: ${errorMessage}`);
+        setCalcExplanation(t('chat.explainError', { msg: errorMessage }));
       }
     } finally {
       if (messageIndex !== null) {
@@ -1607,12 +1630,12 @@ ${scoreContext}` : messageText;
       <section className="panel l6s-guided">
         <div className="l6s-guided__head">
           <div>
-            <div className="section-label">Guided assessment</div>
-            <h2>{review ? 'Review your answers' : `Step ${stepNumber} of ${ASSISTED_STEPS.length}`}</h2>
+            <div className="section-label">{t('guided.kicker')}</div>
+            <h2>{review ? t('guided.review') : t('guided.step', { n: stepNumber, total: ASSISTED_STEPS.length })}</h2>
             <div className="l6s-progress"><i style={{ width: `${progress}%` }} /></div>
           </div>
           <div className="l6s-groups">
-            {[['IL', 'Lean · IL'], ['IS', 'Six Sigma · IS'], ['IM', 'Maturity · IM']].map(([key, label]) => (
+            {['IL', 'IS', 'IM'].map((key) => [key, t(`guided.group.${key}`)]).map(([key, label]) => (
               <span key={key} className={`l6s-grp-chip${active && step.group === key ? ' is-on' : ''}`}>{label}</span>
             ))}
           </div>
@@ -1621,9 +1644,9 @@ ${scoreContext}` : messageText;
         <div className="l6s-guided__body">
           {active && (
             <>
-              <div className="l6s-code">{step.code} · {step.group === 'IL' ? 'LEAN' : step.group === 'IS' ? 'SIX SIGMA' : 'MATURITY'}</div>
+              <div className="l6s-code">{step.code} · {t(`guided.groupName.${step.group}`)}</div>
               <div className="l6s-q" dir="auto">{getAssistedStepLabel(step)}</div>
-              <div className="l6s-qsub">Choose the level that best matches your current situation.</div>
+              <div className="l6s-qsub">{t('guided.choose')}</div>
               <div className="l6s-levels">
                 {getAssistedChoices(step).map((choice) => (
                   <button
@@ -1646,12 +1669,12 @@ ${scoreContext}` : messageText;
 
           {review && (
             <>
-              <div className="l6s-qsub">Adjust any score before calculating.</div>
+              <div className="l6s-qsub">{t('guided.adjust')}</div>
               <div className="l6s-review">
                 {[
-                  { key: 'IL', title: 'Lean (IL)' },
-                  { key: 'IS', title: 'Six Sigma (IS)' },
-                  { key: 'IM', title: 'Maturity (IM)' }
+                  { key: 'IL', title: t('guided.section.IL') },
+                  { key: 'IS', title: t('guided.section.IS') },
+                  { key: 'IM', title: t('guided.section.IM') }
                 ].map((section) => (
                   <div key={section.key}>
                     <span className="l6s-lbl">{section.title}</span>
@@ -1671,7 +1694,7 @@ ${scoreContext}` : messageText;
                           >
                             <option value="" disabled>--</option>
                             {[1, 2, 3, 4, 5].map((level) => (
-                              <option key={level} value={level}>Level {level}</option>
+                              <option key={level} value={level}>{t('guided.level', { n: level })}</option>
                             ))}
                           </select>
                         </div>
@@ -1687,21 +1710,21 @@ ${scoreContext}` : messageText;
         <div className="l6s-guided__foot">
           <div className="l6s-row" style={{ marginTop: 0 }}>
             <button type="button" className="button-secondary" onClick={() => navigate('chat')}>
-              <ArrowLeft className="w-4 h-4" /> Back to chat
+              <ArrowLeft className="w-4 h-4" /> {t('guided.back')}
             </button>
-            <button type="button" className="l6s-linkbtn" onClick={cancelAssistedAssessment}>Cancel assessment</button>
+            <button type="button" className="l6s-linkbtn" onClick={cancelAssistedAssessment}>{t('guided.cancel')}</button>
           </div>
           <div className="l6s-row" style={{ marginTop: 0 }}>
             <button type="button" className="button-secondary" onClick={goBackAssistedStep} disabled={active && stepIndex === 0}>
-              Previous
+              {t('guided.previous')}
             </button>
             {active ? (
               <button type="button" className="button-primary" onClick={skipForwardAssistedStep} disabled={currentValue === ''}>
-                Next
+                {t('guided.next')}
               </button>
             ) : (
               <button type="button" className="button-primary" onClick={confirmAssistedAssessment} disabled={!reviewReady || loading}>
-                Confirm &amp; calculate
+                {t('guided.confirm')}
               </button>
             )}
           </div>
@@ -1711,6 +1734,7 @@ ${scoreContext}` : messageText;
   };
 
   return (
+    <LangContext.Provider value={{ lang: uiLanguage, t, term }}>
     <div className="app-shell" data-theme={themeMode}>
       <div className="ambient-layer">
         <span className="ambient-blob ambient-blob--a" />
@@ -1725,9 +1749,9 @@ ${scoreContext}` : messageText;
             <div className="intro-orb intro-orb--b" />
             <div className="intro-orb intro-orb--c" />
             <div className="intro-logo text-center">
-              <div className="intro-kicker">AI-Driven Lean Six Sigma</div>
-              <div className="intro-title">Performance Engine</div>
-              <div className="intro-subtitle">IA-Guided industrial performance management</div>
+              <div className="intro-kicker">{t('brand.kicker')}</div>
+              <div className="intro-title">{t('intro.title')}</div>
+              <div className="intro-subtitle">{t('intro.subtitle')}</div>
               <div className="intro-dots">
                 <span className="intro-dot" />
                 <span className="intro-dot" />
@@ -1740,17 +1764,17 @@ ${scoreContext}` : messageText;
         <div className="l6s-shell">
         <div className="l6s-maincol">
         <header className="topbar panel l6s-topbar">
-          <button type="button" className="l6s-brand" onClick={() => navigate('chat')} title="Home">
+          <button type="button" className="l6s-brand" onClick={() => navigate('chat')} title={t('top.home')}>
             <div className="brand-mark">
               <TrendingUp className="w-6 h-6" />
             </div>
             <div style={{ minWidth: 0 }}>
-              <div className="brand-kicker">AI-Driven Lean Six Sigma</div>
-              <h1 className="brand-title">Operational Excellence Performance Engine</h1>
+              <div className="brand-kicker">{t('brand.kicker')}</div>
+              <h1 className="brand-title">{t('brand.title')}</h1>
               <div className="brand-chips">
-                <span className="chip">GraphRAG</span>
-                <span className="chip">Guided</span>
-                <span className="chip">Predictive</span>
+                <span className="chip">{t('brand.chip.graphrag')}</span>
+                <span className="chip">{t('brand.chip.guided')}</span>
+                <span className="chip">{t('brand.chip.predictive')}</span>
               </div>
             </div>
           </button>
@@ -1762,16 +1786,24 @@ ${scoreContext}` : messageText;
               className={`button-primary l6s-cta${view === 'guided' ? ' is-active' : ''}`}
             >
               <ClipboardCheck className="w-4 h-4" />
-              {isGuidedFullScreen && view !== 'guided' ? `Resume assessment (${guidedAnswered}/21)` : 'Start Guided Assessment'}
+              {isGuidedFullScreen && view !== 'guided' ? t('top.resume', { n: guidedAnswered }) : t('top.startGuided')}
             </button>
             <div className="mode-switch">
+              <button
+                type="button"
+                onClick={() => navigate('plan')}
+                aria-pressed={view === 'plan'}
+                className={`mode-button ${view === 'plan' ? 'is-active' : ''}`}
+              >
+                <ClipboardList className="w-4 h-4" /> {t('top.plan')}
+              </button>
               <button
                 type="button"
                 onClick={() => { navigate('chat'); setActiveTab('chat'); }}
                 aria-pressed={view === 'chat' && activeTab === 'chat'}
                 className={`mode-button ${view === 'chat' && activeTab === 'chat' ? 'is-active' : ''}`}
               >
-                <MessageSquare className="w-4 h-4" /> Chat
+                <MessageSquare className="w-4 h-4" /> {t('top.chat')}
               </button>
               <button
                 type="button"
@@ -1779,15 +1811,27 @@ ${scoreContext}` : messageText;
                 aria-pressed={view === 'chat' && activeTab === 'calculator'}
                 className={`mode-button ${view === 'chat' && activeTab === 'calculator' ? 'is-active' : ''}`}
               >
-                <Calculator className="w-4 h-4" /> Calculator
+                <Calculator className="w-4 h-4" /> {t('top.calculator')}
               </button>
             </div>
+            <button
+              type="button"
+              className="button-ghost l6s-lang"
+              onClick={() => setUiLanguage(uiLanguage === 'fr' ? 'en' : 'fr')}
+              title={`${t('lang.switch')}: ${uiLanguage === 'fr' ? t('lang.en') : t('lang.fr')}`}
+              aria-label={t('lang.switch')}
+            >
+              <Globe className="w-4 h-4" />
+              <span className={uiLanguage === 'en' ? 'is-on' : ''}>EN</span>
+              <span className="l6s-lang__sep">/</span>
+              <span className={uiLanguage === 'fr' ? 'is-on' : ''}>FR</span>
+            </button>
             <button
               type="button"
               className={`l6s-mobile-me l6s-ava${isAdmin ? '' : ' is-user'}`}
               style={{ width: 40, height: 40 }}
               onClick={() => setSidebarExpanded(true)}
-              title="Menu"
+              title={t('top.menu')}
             >
               {(currentUser?.name || currentUser?.username || 'U')[0].toUpperCase()}
             </button>
@@ -1795,7 +1839,17 @@ ${scoreContext}` : messageText;
         </header>
 
         <div className="l6s-body">
-          {view === 'companies' && isAdmin ? (
+          {view === 'plan' ? (
+            <div className="l6s-main">
+              <PlanPage
+                onHome={() => navigate('chat')}
+                onStartAssessment={openGuidedAssessment}
+                pendingParams={lastCalcParams}
+                pendingResult={calcResult ? { ...calcResult, _savedId: savedAssessmentId } : null}
+                showToast={showToast}
+              />
+            </div>
+          ) : view === 'companies' && isAdmin ? (
             <div className="l6s-main">
               <CompaniesPage onHome={() => navigate('chat')} />
             </div>
@@ -1807,19 +1861,19 @@ ${scoreContext}` : messageText;
           <>
           <aside className="sidebar panel hidden md:flex md:w-72 flex-col min-h-0">
             <div className="px-4 py-4 border-b panel-divider">
-              <div className="section-label">Logbook</div>
-              <div className="mt-2 text-sm font-semibold">Conversation History</div>
+              <div className="section-label">{t('log.kicker')}</div>
+              <div className="mt-2 text-sm font-semibold">{t('log.title')}</div>
               <button
                 type="button"
                 onClick={startNewConversation}
                 className="button-primary mt-4 w-full"
               >
-                New Conversation
+                {t('log.new')}
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
               {conversations.length === 0 ? (
-                <div className="text-sm text-muted">No conversations yet.</div>
+                <div className="text-sm text-muted">{t('log.empty')}</div>
               ) : (
                 conversations.map((conv) => {
                   const count = conv.messages.filter((m) => m.role === 'user').length;
@@ -1832,13 +1886,13 @@ ${scoreContext}` : messageText;
                         aria-label={`Open ${conv.title}`}
                       >
                         <div className="history-meta">
-                          <span className="history-pill">{conv.id === activeConvId ? 'Open' : 'Chat'}</span>
+                          <span className="history-pill">{conv.id === activeConvId ? t('log.open') : t('log.chat')}</span>
                         </div>
                         <div className="history-title truncate" dir="auto" title={conv.title}>
                           {conv.title}
                         </div>
                         <div className="history-snippet truncate">
-                          {count} {count === 1 ? 'question' : 'questions'} · {timeAgo(conv.updatedAt)}
+                          {count === 1 ? t('log.question') : t('log.questions', { n: count })} · {timeAgo(conv.updatedAt)}
                         </div>
                       </button>
                       <div className="history-actions">
@@ -1846,8 +1900,8 @@ ${scoreContext}` : messageText;
                           type="button"
                           onClick={() => deleteConversation(conv.id)}
                           className="history-action"
-                          aria-label="Delete conversation"
-                          title="Delete conversation"
+                          aria-label={t('log.delete')}
+                          title={t('log.delete')}
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -1866,10 +1920,10 @@ ${scoreContext}` : messageText;
                   <span className="l6s-pill"><span className="l6s-dot" />{activeModelLabel}</span>
                   {isGuidedFullScreen ? (
                     <button type="button" className="l6s-pill" onClick={() => navigate('guided')}>
-                      Guided assessment: {guidedAnswered}/21 · Resume
+                      {t('chat.guidedResume', { n: guidedAnswered })}
                     </button>
                   ) : (
-                    <span className="l6s-pill">Guided assessment: not started</span>
+                    <span className="l6s-pill">{t('chat.guidedNotStarted')}</span>
                   )}
                 </div>
 
@@ -1893,11 +1947,11 @@ ${scoreContext}` : messageText;
                             msg.role === 'user' ? 'message-bubble--user' : 'message-bubble--assistant'
                           }`}
                         >
-                          <p className="whitespace-pre-wrap" dir="auto">{msg.content}</p>
+                          <p className="whitespace-pre-wrap" dir="auto">{msg.introKey ? t(msg.introKey) : msg.content}</p>
                           {msg.sources && msg.sources.length > 0 && (
                             <div className="mt-2 pt-2 border-t panel-divider">
                               <p className="text-xs text-muted">
-                                Sources: {msg.sources.join(', ')}
+                                {t('chat.sources')}: {msg.sources.join(', ')}
                               </p>
                             </div>
                           )}
@@ -1913,7 +1967,7 @@ ${scoreContext}` : messageText;
                                 disabled={explainLoadingId === idx || loading}
                                 className="button-secondary"
                               >
-                                {explainLoadingId === idx ? 'Explaining...' : 'Explain this result'}
+                                {explainLoadingId === idx ? t('chat.explaining') : t('chat.explain')}
                               </button>
                             </div>
                           )}
@@ -1931,7 +1985,7 @@ ${scoreContext}` : messageText;
                         <div className="flex items-center gap-2">
                           <Loader2 className="w-5 h-5 animate-spin text-muted" />
                           <span className="text-sm text-muted">
-                            {loadingMessage || 'Thinking...'}
+                            {loadingMessage || t('chat.thinking')}
                           </span>
                         </div>
                       </div>
@@ -1949,7 +2003,7 @@ ${scoreContext}` : messageText;
                       value={input}
                       onChange={(e) => setInput(e.target.value)}
                       onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                      placeholder="Ask about DMAIC, process capability, or start a guided assessment."
+                      placeholder={t('chat.placeholder')}
                       className="input-field input-field--chat flex-1"
                       disabled={loading}
                       dir="auto"
@@ -1974,7 +2028,7 @@ ${scoreContext}` : messageText;
                   )}`}
                 >
                   <h2 className={`text-2xl font-bold mb-6 ${themeClass('text-slate-100', 'text-slate-900')}`}>
-                    Parameter Calculator
+                    {t('calc.title')}
                   </h2>
                   
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
@@ -1982,7 +2036,7 @@ ${scoreContext}` : messageText;
                     <div className="space-y-4">
                       <h3 className="text-lg font-semibold flex items-center gap-2 text-accent">
                         <AlertCircle className="w-5 h-5" />
-                        Implementation of Lean (IL)
+                        {t('calc.IL')}
                       </h3>
                       {[1, 2, 3, 4, 5, 6, 7].map(i => (
                         <div key={i}>
@@ -2008,7 +2062,7 @@ ${scoreContext}` : messageText;
                     <div className="space-y-4">
                       <h3 className="text-lg font-semibold flex items-center gap-2 text-accent-2">
                         <TrendingUp className="w-5 h-5" />
-                        Implementation of Six Sigma (IS)
+                        {t('calc.IS')}
                       </h3>
                       {[1, 2, 3, 4, 5, 6, 7].map(i => (
                         <div key={i}>
@@ -2034,7 +2088,7 @@ ${scoreContext}` : messageText;
                     <div className="space-y-4">
                       <h3 className="text-lg font-semibold flex items-center gap-2 text-accent-3">
                         <Calculator className="w-5 h-5" />
-                        Maturity Levels (IM)
+                        {t('calc.IM')}
                       </h3>
                       {[1, 2, 3, 4, 5, 6, 7].map(i => (
                         <div key={i}>
@@ -2065,12 +2119,12 @@ ${scoreContext}` : messageText;
                     {loading ? (
                       <>
                         <Loader2 className="w-5 h-5 animate-spin" />
-                        Calculating...
+                        {t('calc.calculating')}
                       </>
                     ) : (
                       <>
                         <TrendingUp className="w-5 h-5" />
-                        Calculate Predictions & Get Recommendations
+                        {t('calc.run')}
                       </>
                     )}
                   </button>
@@ -2082,7 +2136,7 @@ ${scoreContext}` : messageText;
                     )}`}>
                       <div className="flex flex-col gap-4">
                         <div>
-                          <div className={`text-sm ${themeClass('text-slate-400', 'text-slate-500')}`}>Predicted Performance</div>
+                          <div className={`text-sm ${themeClass('text-slate-400', 'text-slate-500')}`}>{t('calc.predicted')}</div>
                           <div className={`text-3xl font-semibold ${themeClass('text-slate-100', 'text-slate-900')}`}>
                             {typeof calcResult.prediction === 'number'
                               ? `${calcResult.prediction.toFixed(1)}%`
@@ -2105,7 +2159,7 @@ ${scoreContext}` : messageText;
                         <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-6">
                           <div className={`rounded-lg p-4 ${themeClass('bg-slate-900/80', 'bg-slate-50')}`}>
                             <div className={`text-xs uppercase tracking-wide ${themeClass('text-slate-400', 'text-slate-500')}`}>
-                              Radar Summary
+                              {t('calc.radar')}
                             </div>
                             <div className="mt-3 flex items-center justify-center">
                               <svg width={radarSize} height={radarSize}>
@@ -2162,13 +2216,13 @@ ${scoreContext}` : messageText;
                         {hasAnyParameter && (
                           <div className="mt-6">
                             <div className={`text-xs uppercase tracking-[0.3em] ${themeClass('text-slate-400', 'text-slate-500')}`}>
-                              Parameter Profile
+                              {t('calc.profile')}
                             </div>
                             <div className="mt-4 space-y-4">
                               {[
-                                { label: 'Lean (IL)', key: 'IL', color: 'bg-accent', values: parameters.IL },
-                                { label: 'Six Sigma (IS)', key: 'IS', color: 'bg-accent-2', values: parameters.IS },
-                                { label: 'Maturity (IM)', key: 'IM', color: 'bg-accent-3', values: parameters.IM }
+                                { label: t('guided.section.IL'), key: 'IL', color: 'bg-accent', values: parameters.IL },
+                                { label: t('guided.section.IS'), key: 'IS', color: 'bg-accent-2', values: parameters.IS },
+                                { label: t('guided.section.IM'), key: 'IM', color: 'bg-accent-3', values: parameters.IM }
                               ].map((group) => (
                                 <div
                                   key={group.key}
@@ -2210,10 +2264,10 @@ ${scoreContext}` : messageText;
                           <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
                               <div className={`text-xs uppercase tracking-wide ${themeClass('text-slate-400', 'text-slate-500')}`}>
-                                AI Explanation
+                                {t('calc.aiExplanation')}
                               </div>
                               <div className={`mt-1 text-sm font-semibold ${themeClass('text-slate-100', 'text-slate-900')}`}>
-                                Clarify the assessment results
+                                {t('calc.aiExplanationSub')}
                               </div>
                             </div>
                             <button
@@ -2222,7 +2276,7 @@ ${scoreContext}` : messageText;
                               disabled={calcExplanationLoading || loading}
                               className="button-secondary"
                             >
-                              {calcExplanationLoading ? 'Explaining...' : 'Explain results'}
+                              {calcExplanationLoading ? t('chat.explaining') : t('calc.explain')}
                             </button>
                           </div>
                           {calcExplanation && (
@@ -2232,7 +2286,7 @@ ${scoreContext}` : messageText;
                           )}
                           {!calcExplanation && !calcExplanationLoading && (
                             <div className={`mt-3 text-xs ${themeClass('text-slate-400', 'text-slate-500')}`}>
-                              Generate a plain-language explanation with tailored recommendations.
+                              {t('calc.explainHint')}
                             </div>
                           )}
                         </div>
@@ -2280,6 +2334,7 @@ ${scoreContext}` : messageText;
         </div>
       )}
     </div>
+    </LangContext.Provider>
   );
 };
 

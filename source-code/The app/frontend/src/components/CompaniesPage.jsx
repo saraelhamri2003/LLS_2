@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X, Loader2 } from 'lucide-react';
 import { apiFetch } from '../api';
+import { useLang } from '../i18n';
 
 const PAGE_SIZE = 12;
 const GROUPS = [
-  { key: 'IL', label: 'Lean (IL)', tone: 'is-il' },
-  { key: 'IS', label: 'Six Sigma (IS)', tone: 'is-is' },
-  { key: 'M', label: 'Maturity (M)', tone: 'is-m' }
+  { key: 'IL', label: 'cp.lean', tone: 'is-il' },
+  { key: 'IS', label: 'cp.sixsigma', tone: 'is-is' },
+  { key: 'M', label: 'cp.maturity', tone: 'is-m' }
 ];
 
 const average = (company, prefix) => {
@@ -21,16 +22,17 @@ const parsePerf = (text) => {
 };
 
 const COLUMNS = [
-  { key: 'id', label: 'ID' },
-  { key: 'il', label: 'Lean avg (IL)' },
-  { key: 'is', label: 'Six Sigma avg (IS)' },
-  { key: 'm', label: 'Maturity avg (M)' },
-  { key: 'strategy', label: 'Strategy' },
-  { key: 'perf', label: 'Performance' },
-  { key: 'cluster', label: 'Cluster' }
+  { key: 'id', label: 'cp.col.id' },
+  { key: 'il', label: 'cp.col.il' },
+  { key: 'is', label: 'cp.col.is' },
+  { key: 'm', label: 'cp.col.m' },
+  { key: 'strategy', label: 'cp.col.strategy' },
+  { key: 'perf', label: 'cp.col.perf' },
+  { key: 'cluster', label: 'cp.col.cluster' }
 ];
 
 export default function CompaniesPage({ onHome }) {
+  const { t } = useLang();
   const [raw, setRaw] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -119,42 +121,42 @@ export default function CompaniesPage({ onHome }) {
     <section className="panel l6s-work">
       <div className="l6s-work__head">
         <div>
-          <div className="l6s-crumb"><button type="button" onClick={onHome}>Home</button><span>/</span>Manage companies</div>
-          <h2>Manage companies</h2>
+          <div className="l6s-crumb"><button type="button" onClick={onHome}>{t('top.home')}</button><span>/</span>{t('cp.title')}</div>
+          <h2>{t('cp.title')}</h2>
           <div className="l6s-work__sub">
-            {loading ? 'Loading…' : `${companies.length} companies · ${filtered.length} shown with current filters`}
+            {loading ? t('cp.loading') : t('cp.count', { n: companies.length, shown: filtered.length })}
           </div>
         </div>
-        <button type="button" className="button-secondary" onClick={onHome}>← Back to chat</button>
+        <button type="button" className="button-secondary" onClick={onHome}>{t('cp.back')}</button>
       </div>
 
       <div className="l6s-tool" ref={toolRef}>
         <label className="l6s-search">
           <Search className="w-4 h-4" />
-          <input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder="Search by ID, strategy or performance…" />
+          <input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder={t('cp.search')} />
         </label>
         <select className="l6s-select" value={strategy} onChange={(e) => { setStrategy(e.target.value); setPage(1); }}>
-          <option value="all">All strategies</option>
+          <option value="all">{t('cp.allStrategies')}</option>
           {strategies.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
         <select className="l6s-select" value={cluster} onChange={(e) => { setCluster(e.target.value); setPage(1); }}>
-          <option value="all">All clusters</option>
-          {clusters.map((c) => <option key={c} value={String(c)}>Cluster {c}</option>)}
+          <option value="all">{t('cp.allClusters')}</option>
+          {clusters.map((c) => <option key={c} value={String(c)}>{t('cp.cluster', { n: c })}</option>)}
         </select>
       </div>
 
       <div className="l6s-tablewrap" ref={wrapRef}>
         {loading ? (
-          <div className="l6s-loading"><Loader2 className="w-6 h-6 animate-spin" style={{ margin: '0 auto 8px' }} />Loading companies…</div>
+          <div className="l6s-loading"><Loader2 className="w-6 h-6 animate-spin" style={{ margin: '0 auto 8px' }} />{t('cp.loadingCompanies')}</div>
         ) : error ? (
-          <div className="l6s-loading" style={{ color: 'var(--l6s-admin)' }}>Could not load companies: {error}</div>
+          <div className="l6s-loading" style={{ color: 'var(--l6s-admin)' }}>{t('cp.loadError', { msg: error })}</div>
         ) : (
           <table className="l6s-table">
             <thead>
               <tr>
                 {COLUMNS.map((col) => (
                   <th key={col.key} className={`is-sortable${sort.key === col.key ? ' is-sorted' : ''}`} onClick={() => sortBy(col.key)}>
-                    {col.label}<span className="l6s-arr">{sort.key === col.key ? (sort.dir > 0 ? '↑' : '↓') : '↕'}</span>
+                    {t(col.label)}<span className="l6s-arr">{sort.key === col.key ? (sort.dir > 0 ? '↑' : '↓') : '↕'}</span>
                   </th>
                 ))}
               </tr>
@@ -173,11 +175,11 @@ export default function CompaniesPage({ onHome }) {
                       <div className="l6s-qbar"><i style={{ width: `${c.perf ?? 0}%` }} /></div>
                     </div>
                   </td>
-                  <td>Cluster {c.cluster}</td>
+                  <td>{t('cp.cluster', { n: c.cluster })}</td>
                 </tr>
               ))}
               {rows.length === 0 && (
-                <tr className="l6s-empty"><td colSpan={COLUMNS.length}>No companies match the filters.</td></tr>
+                <tr className="l6s-empty"><td colSpan={COLUMNS.length}>{t('cp.noMatch')}</td></tr>
               )}
             </tbody>
           </table>
@@ -187,8 +189,8 @@ export default function CompaniesPage({ onHome }) {
       <div className="l6s-work__foot">
         <span>
           {filtered.length
-            ? `Showing ${start + 1} - ${start + rows.length} of ${filtered.length} companies`
-            : 'No companies match'}
+            ? t('cp.showing', { from: start + 1, to: start + rows.length, total: filtered.length })
+            : t('cp.noMatchFoot')}
         </span>
         {pages > 1 && (
           <div className="l6s-pages">
@@ -206,20 +208,20 @@ export default function CompaniesPage({ onHome }) {
           <>
             <div className="l6s-drawer__top">
               <div>
-                <div className="section-label">Company</div>
+                <div className="section-label">{t('cp.company')}</div>
                 <div className="l6s-drawer__big">#{picked.id}</div>
-                <div className="l6s-work__sub">Cluster {picked.cluster} · {picked.strategy}</div>
+                <div className="l6s-work__sub">{t('cp.cluster', { n: picked.cluster })} · {picked.strategy}</div>
               </div>
-              <button type="button" className="l6s-mini" title="Close" onClick={() => setPickedId(null)}><X className="w-4 h-4" /></button>
+              <button type="button" className="l6s-mini" title={t('cp.close')} onClick={() => setPickedId(null)}><X className="w-4 h-4" /></button>
             </div>
             <div className="l6s-perfcard">
-              <div className="section-label">Performance</div>
+              <div className="section-label">{t('cp.performance')}</div>
               <div className="l6s-big">{picked.perfLabel}</div>
               <div className="l6s-qbar"><i style={{ width: `${picked.perf ?? 0}%` }} /></div>
             </div>
             {GROUPS.map((g) => (
               <div key={g.key}>
-                <span className="l6s-lbl">{g.label}</span>
+                <span className="l6s-lbl">{t(g.label)}</span>
                 <div className="l6s-fgrid">
                   {Array.from({ length: 7 }, (_, i) => `${g.key}${i + 1}`).map((code) => (
                     <div className="l6s-fcell" key={code}>
